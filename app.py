@@ -9,29 +9,17 @@ app = Flask(__name__)
 # NORMALIZAÇÃO DE LINKS
 # ============================
 def normalizar_url(url):
-    """
-    Converte qualquer link da Shopee para o link final correto,
-    respeitando redirecionamentos e extraindo o link real.
-    Faz dois passos:
-      1) Expande shp.ee / br.shp.ee
-      2) Se virar universal-link, extrai o parâmetro 'redir'
-    """
     debug = []
-
     try:
-        # Remove espaços
         original = url.strip()
         current = original
         debug.append(f"INICIAL: {original}")
 
-        # 1) Se for link encurtado shp.ee — deixa requests seguir redirect
         if "shp.ee" in current:
             r = requests.get(current, allow_redirects=True, timeout=10)
             current = r.url
             debug.append(f"DEPOIS REDIRECT SHP: {current}")
 
-        # 2) Se for um universal-link:
-        #    https://shopee.com.br/universal-link?redir=xxxx
         if "shopee.com.br/universal-link" in current:
             parsed = urlparse(current)
             qs = parse_qs(parsed.query)
@@ -44,7 +32,6 @@ def normalizar_url(url):
 
     except Exception as e:
         debug.append(f"ERRO NORMALIZAR: {e}")
-        # Em caso de erro, devolve a original mesmo
         return url, "\n".join(debug)
 
 
@@ -66,19 +53,11 @@ def extrair_json_next_data(html):
 # REMOVE A MARCA D'ÁGUA
 # ============================
 def limpar_watermark(url):
-    """
-    Padrão com marca d'água:
-        .../mms/<ID>.<NUM1>.<NUM2>.mp4
-
-    Sem marca d'água:
-        .../mms/<ID>.mp4
-    """
-    # Remove DOIS blocos numéricos antes do .mp4
     return re.sub(r'\.\d+\.\d+\.mp4$', '.mp4', url)
 
 
 # ============================
-# HTML DO FRONT
+# TEMPLATE HTML
 # ============================
 HTML = """
 <!DOCTYPE html>
@@ -142,16 +121,36 @@ button:hover {
 .resultado-box {
     padding: 14px;
     margin-top: 20px;
-    background: #ffe6e6;
-    border-left: 4px solid #cc0000;
-    white-space: pre-wrap;
+    background: #e6ffe6;
+    border-left: 4px solid #009900;
     border-radius: 10px;
 }
 
-.sucesso {
-    background: #e6ffe6;
-    border-left: 4px solid #009900;
-    word-break: break-all;
+.video-wrapper {
+    margin-top: 12px;
+}
+
+.video-wrapper video {
+    width: 100%;
+    max-height: 320px;
+    border-radius: 10px;
+    background: #000;
+}
+
+.download-btn {
+    margin-top: 12px;
+    padding: 12px 20px;
+    background: #ff5b00;
+    color: white;
+    font-weight: bold;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    width: 100%;
+}
+
+.download-btn:hover {
+    background: #e24e00;
 }
 
 .debug-toggle {
@@ -173,13 +172,47 @@ button:hover {
     display: none;
 }
 </style>
+
 <script>
 function toggleDebug() {
     var box = document.getElementById('debug-box');
     if (!box) return;
     box.style.display = (box.style.display === 'none' || box.style.display === '') ? 'block' : 'none';
 }
+
+async function baixarVideo(buttonEl) {
+    try {
+        var url = buttonEl.getAttribute('data-url');
+        if (!url) {
+            alert("Nenhum link encontrado.");
+            return;
+        }
+
+        const response = await fetch(url);
+        if (!response.ok) {
+            alert("Erro ao baixar o vídeo (HTTP " + response.status + ").");
+            return;
+        }
+
+        const blob = await response.blob();
+        const link = document.createElement("a");
+        const blobUrl = URL.createObjectURL(blob);
+
+        link.href = blobUrl;
+        link.download = "video_shopee.mp4";
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        URL.revokeObjectURL(blobUrl);
+
+    } catch (e) {
+        alert("Erro ao baixar o vídeo.");
+        console.error(e);
+    }
+}
 </script>
+
 </head>
 <body>
 <div class="container">
@@ -189,20 +222,34 @@ function toggleDebug() {
         <form method="POST">
             <label>Link da Shopee:</label>
             <input name="url" placeholder="Cole o link aqui..." required />
-
             <button type="submit">Gerar</button>
         </form>
 
         {% if erro %}
-        <div class="resultado-box">
+        <div class="resultado-box erro">
             {{ erro }}
         </div>
         {% endif %}
 
         {% if link_final %}
-        <div class="resultado-box sucesso">
-            <b>Vídeo sem marca d'água:</b><br><br>
-            <a href="{{ link_final }}" target="_blank">{{ link_final }}</a>
+        <div class="resultado-box">
+
+            <div class="video-wrapper">
+                <b style="display:block; margin-bottom:8px;">Pré-visualização:</b>
+                <video controls src="{{ link_final }}">
+                    Seu navegador não suporta vídeo HTML5.
+                </video>
+            </div>
+
+            <button
+                type="button"
+                class="download-btn"
+                onclick="baixarVideo(this)"
+                data-url="{{ link_final }}"
+            >
+                Download
+            </button>
+
         </div>
         {% endif %}
 
@@ -230,16 +277,13 @@ def index():
 
     if request.method == "POST":
         url = request.form.get("url", "").strip()
-
         debug_log += f"URL RECEBIDA: {url}\n"
 
-        # Normalizar antes de tudo
         url_norm, dbg_norm = normalizar_url(url)
         debug_log += f"URL NORMALIZADA: {url_norm}\n"
         debug_log += dbg_norm + "\n"
 
         try:
-            # Baixa o HTML (requests já segue redirects por padrão)
             r = requests.get(url_norm, timeout=10)
             debug_log += f"STATUS HTTP: {r.status_code}\n"
             debug_log += f"URL FINAL REQUESTS: {r.url}\n"
@@ -250,22 +294,19 @@ def index():
 
             html = r.text
 
-            # Extrai JSON
             json_text = extrair_json_next_data(html)
             if not json_text:
-                erro = "Não encontrei JSON __NEXT_DATA__ na página final da Shopee."
+                erro = "Não encontrei JSON __NEXT_DATA__ na página."
                 return render_template_string(HTML, erro=erro, debug=debug_log)
 
-            # Procura o campo watermarkVideoUrl
             match = re.search(r'"watermarkVideoUrl":"(.*?)"', json_text)
             if not match:
-                erro = "Não encontrei o link do vídeo dentro do JSON."
+                erro = "Não encontrei o link do vídeo."
                 return render_template_string(HTML, erro=erro, debug=debug_log)
 
             url_watermark = match.group(1).replace("\\/", "/")
             debug_log += f"WATERMARK URL: {url_watermark}\n"
 
-            # Remove marca d'água
             url_clean = limpar_watermark(url_watermark)
             debug_log += f"URL LIMPA: {url_clean}\n"
 

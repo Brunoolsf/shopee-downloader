@@ -2,6 +2,7 @@ from flask import Flask, request, render_template_string
 import requests
 from urllib.parse import urlparse, parse_qs, unquote
 import re
+import html  # para decodificar caracteres escapados do caption
 
 app = Flask(__name__)
 
@@ -38,10 +39,10 @@ def normalizar_url(url):
 # ============================
 # EXTRAI JSON __NEXT_DATA__
 # ============================
-def extrair_json_next_data(html):
+def extrair_json_next_data(html_page):
     match = re.search(
         r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
-        html,
+        html_page,
         re.DOTALL
     )
     if match:
@@ -137,6 +138,28 @@ button:hover {
     background: #000;
 }
 
+.caption-box {
+    margin-top: 12px;
+    padding: 12px;
+    background: #f7f7f7;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.copy-btn {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: #28a745;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.copy-btn:hover {
+    background: #218838;
+}
+
 .download-btn {
     margin-top: 12px;
     padding: 12px 20px;
@@ -211,6 +234,33 @@ async function baixarVideo(buttonEl) {
         console.error(e);
     }
 }
+
+function copiarCaption(buttonEl) {
+    var texto = buttonEl.getAttribute('data-caption');
+    if (!texto) {
+        alert("Nenhuma descrição encontrada.");
+        return;
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(texto)
+            .then(function() {
+                alert("Descrição copiada!");
+            })
+            .catch(function() {
+                alert("Não foi possível copiar a descrição.");
+            });
+    } else {
+        // Fallback simples
+        var ta = document.createElement("textarea");
+        ta.value = texto;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        alert("Descrição copiada!");
+    }
+}
 </script>
 
 </head>
@@ -240,6 +290,21 @@ async function baixarVideo(buttonEl) {
                     Seu navegador não suporta vídeo HTML5.
                 </video>
             </div>
+
+            {% if caption %}
+            <div class="caption-box">
+                <b>Descrição:</b>
+                <p>{{ caption }}</p>
+                <button
+                    type="button"
+                    class="copy-btn"
+                    data-caption="{{ caption }}"
+                    onclick="copiarCaption(this)"
+                >
+                    Copiar descrição
+                </button>
+            </div>
+            {% endif %}
 
             <button
                 type="button"
@@ -273,6 +338,7 @@ async function baixarVideo(buttonEl) {
 def index():
     erro = None
     link_final = None
+    caption = None
     debug_log = ""
 
     if request.method == "POST":
@@ -292,13 +358,23 @@ def index():
                 erro = f"Erro ao acessar a página: {r.status_code}"
                 return render_template_string(HTML, erro=erro, debug=debug_log)
 
-            html = r.text
+            html_page = r.text
 
-            json_text = extrair_json_next_data(html)
+            # Extrai JSON
+            json_text = extrair_json_next_data(html_page)
             if not json_text:
                 erro = "Não encontrei JSON __NEXT_DATA__ na página."
                 return render_template_string(HTML, erro=erro, debug=debug_log)
 
+            # NOVO: extrair caption (sem mexer na lógica do vídeo)
+            match_caption = re.search(r'"caption":"(.*?)"', json_text)
+            if match_caption:
+                caption_raw = match_caption.group(1)
+                caption_raw = caption_raw.replace("\\/", "/")
+                caption = html.unescape(caption_raw)
+                debug_log += f"CAPTION BRUTO: {caption_raw}\n"
+
+            # Procura o campo watermarkVideoUrl (lógica original)
             match = re.search(r'"watermarkVideoUrl":"(.*?)"', json_text)
             if not match:
                 erro = "Não encontrei o link do vídeo."
@@ -307,6 +383,7 @@ def index():
             url_watermark = match.group(1).replace("\\/", "/")
             debug_log += f"WATERMARK URL: {url_watermark}\n"
 
+            # Remove marca d'água (lógica original)
             url_clean = limpar_watermark(url_watermark)
             debug_log += f"URL LIMPA: {url_clean}\n"
 
@@ -315,7 +392,13 @@ def index():
         except Exception as e:
             erro = f"Erro interno: {str(e)}"
 
-    return render_template_string(HTML, link_final=link_final, erro=erro, debug=debug_log)
+    return render_template_string(
+        HTML,
+        link_final=link_final,
+        caption=caption,
+        erro=erro,
+        debug=debug_log
+    )
 
 
 if __name__ == "__main__":
